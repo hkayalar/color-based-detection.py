@@ -1,69 +1,7 @@
 import cv2
 import numpy as np
 import math
-import random
 import time
-
-class MagneticCoil:
-    def __init__(self, position):
-        self.current = 2.0  # Amperes
-        self.wire_radius = 0.0003  # meters
-        self.wire_length = 9.0  # meters
-        self.num_wraps = 214
-        self.coil_radius = 0.05  # meters
-        self.max_force = 20.0  # Newtons
-        self.position = position
-
-    def get_magnetic_force(self, position, velocity):
-        # Calculate the magnetic force between the coil and the player
-        distance = np.linalg.norm(position - self.position)
-        direction = (self.position - position) / distance
-        magnetic_force = direction * distance  # Adjust this calculation based on your requirements
-        return magnetic_force
-
-
-class Player:
-    def __init__(self, max_speed=4.5):
-        self.max_speed = max_speed
-        self.drag_coefficient = 1.0
-        self.hydro_radius = 0.3314
-        self.fluid_viscosity = 0.00089
-        self.rb = None
-        self.magnetic_force = None
-        self.coils = None
-        self.is_attached = False
-        self.attachment_coil = None
-
-    def start(self, rb, coils):
-        self.rb = rb
-        self.coils = coils
-
-    def move(self, direction):
-        if self.rb is not None:
-            desired_velocity = direction * self.max_speed
-            velocity_change = desired_velocity - self.rb.velocity
-            self.rb.add_force(velocity_change, force_mode="VelocityChange")
-
-    def attach(self, coil):
-        self.attachment_coil = coil
-        self.is_attached = True
-
-    def update(self, position, velocity):
-        if self.is_attached and self.attachment_coil is not None:
-            self.magnetic_force = self.attachment_coil.get_magnetic_force(position, velocity)
-        else:
-            self.magnetic_force = np.zeros(3)
-            for coil in self.coils:
-                self.magnetic_force += coil.get_magnetic_force(position, velocity)
-
-        speed = np.linalg.norm(velocity)
-        drag_force = self.drag_coefficient * self.fluid_viscosity * np.pi * self.hydro_radius * speed
-        drag = -drag_force * velocity / speed if speed > 0 else np.zeros(3)
-        self.rb.add_force(drag)
-
-        if speed > self.max_speed:
-            self.rb.velocity = self.rb.velocity / np.linalg.norm(self.rb.velocity) * self.max_speed
-
 
 class ColorTracker:
     def __init__(self, lower_color, upper_color):
@@ -80,35 +18,35 @@ class ColorTracker:
         if len(contours) > 0:
             largest_contour = max(contours, key=cv2.contourArea)
             x, y, w, h = cv2.boundingRect(largest_contour)
-            detection = np.array([[x / frame.shape[1], y / frame.shape[0], (x + w) / frame.shape[1], (y + h) / frame.shape[0]]])
-            confidence = cv2.contourArea(largest_contour) / (frame.shape[0] * frame.shape[1])
-        else:
-            detection = np.empty((0, 4))
-            confidence = 0.0
+            detection = np.array([[x / frame.shape[1], y / frame.shape[0], w / frame.shape[1], h / frame.shape[0]]])
+            return detection
 
-        if confidence > self.tracking_threshold:
-            self.tracked_object = detection
-
-        return detection
+        return []
 
 def analyze_camera_output(duration):
-    # Initialize magnetic coils, player, and color tracker
-    coil_positions = [
-        [0.1, 0.1, 0.0],
-        [0.2, 0.2, 0.0],
-        [0.3, 0.3, 0.0],
-        [0.4, 0.4, 0.0],
-        [0.5, 0.5, 0.0],
-        [0.6, 0.6, 0.0],
-        [0.7, 0.7, 0.0],
-        [0.8, 0.8, 0.0]
-    ]
-    coils = [MagneticCoil(position) for position in coil_positions]
-    player = Player()
-    color_tracker = ColorTracker([0, 0, 0], [50, 50, 50])
+    # Set camera resolution to a square format
+    width = 1280
+    height = 720
 
-    # Set up camera
+    # Open camera
     camera = cv2.VideoCapture(0)
+    camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+
+    # Check if camera opened successfully
+    if not camera.isOpened():
+        print("Failed to open camera.")
+        return None
+
+    # Color tracker for black targets
+    color_tracker = ColorTracker(lower_color=(0, 0, 0), upper_color=(30, 30, 30))
+
+    # Calculate square size and grid dimensions
+    square_size = 720 // 10
+    grid_start_x = (width - 720) // 2
+    grid_end_x = grid_start_x + 720
+    grid_start_y = (height - 720) // 2
+    grid_end_y = grid_start_y + 720
 
     # Variables for tracking black targets
     detections = []
@@ -120,47 +58,79 @@ def analyze_camera_output(duration):
         # Read frame from camera
         ret, frame = camera.read()
 
-        # Track color in the frame
-        detection = color_tracker.track_color(frame)
+        # Create a blank frame for the grid
+        grid_frame = np.zeros((height, width, 3), np.uint8)
+
+        # Extract the middle section of the frame
+        middle_frame = frame[grid_start_y:grid_end_y, grid_start_x:grid_end_x]
+
+        # Track color in the middle frame
+        detection = color_tracker.track_color(middle_frame)
 
         # Process detection
         if len(detection) > 0:
             x, y, _, _ = detection[0]
-            x = int(x * frame.shape[1])
-            y = int(y * frame.shape[0])
-            cv2.circle(frame, (x, y), 5, (0, 255, 0), -1)
+            x = int(x * middle_frame.shape[1])
+            y = int(y * middle_frame.shape[0])
+            cv2.circle(middle_frame, (x, y), 5, (0, 255, 0), -1)
 
             # Add detection to the list
             detections.append((x, y))
 
-        # Show frame with detections
+        # Draw grid lines on the grid frame
+        for i in range(1, 10):
+            cv2.line(grid_frame, (grid_start_x + i * square_size, grid_start_y),
+                     (grid_start_x + i * square_size, grid_end_y), (0, 0, 255), 1)
+            cv2.line(grid_frame, (grid_start_x, grid_start_y + i * square_size),
+                     (grid_end_x, grid_start_y + i * square_size), (0, 0, 255), 1)
+
+        # Merge the middle frame and grid frame
+        frame[grid_start_y:grid_end_y, grid_start_x:grid_end_x] = middle_frame
+        frame = cv2.addWeighted(frame, 1, grid_frame, 0.5, 0)
+
+        # Show frame with detections and grid
         cv2.imshow("Color Tracking", frame)
 
         # Check for exit key
         if cv2.waitKey(1) == ord('q'):
             break
 
-    # Release camera and destroy windows
+    # Release camera
     camera.release()
-    cv2.destroyAllWindows()
 
     # Calculate the average location of black targets
     if len(detections) > 0:
         avg_x = sum(x for x, _ in detections) / len(detections)
         avg_y = sum(y for _, y in detections) / len(detections)
         avg_location = (avg_x, avg_y)
-        return avg_location
+
+        # Convert average location to square number
+        x_square = math.floor(avg_x / square_size)
+        y_square = math.floor(avg_y / square_size)
+        square_number = y_square * 10 + x_square
+
+        # Draw a rectangle around the correct square
+        cv2.rectangle(frame, (grid_start_x + x_square * square_size, grid_start_y + y_square * square_size),
+                      (grid_start_x + (x_square + 1) * square_size, grid_start_y + (y_square + 1) * square_size),
+                      (0, 255, 0), 2)
+
+        return square_number, frame
     else:
-        return None
+        return None, frame
 
 
 def main():
     # Analyze camera output for 5 seconds
     duration = 5.0
-    avg_location = analyze_camera_output(duration)
+    square_number, frame = analyze_camera_output(duration)
 
-    if avg_location is not None:
-        print("Average Location:", avg_location)
+    if square_number is not None:
+        print("Average Location Square Number:", square_number)
+
+        # Display the frame with grid and rectangle
+        cv2.imshow("Grid Visualization", frame)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
     else:
         print("No black targets detected.")
 
